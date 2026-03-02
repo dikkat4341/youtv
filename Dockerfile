@@ -1,7 +1,7 @@
-# DÜZELTME: yt-dlp artık Python 3.10+ istiyor, 3.10'a geçtik.
+# BURAYI DEĞİŞTİRDİK: 3.9 yerine 3.10 yaptık.
 FROM python:3.10-slim
 
-# Temel araçları ve ffmpeg'i kur
+# Temel araçları, git ve ffmpeg'i kur
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
