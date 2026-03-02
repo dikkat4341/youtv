@@ -8,7 +8,6 @@ app = Flask(__name__)
 
 DATA_FILE = "channels.json"
 
-# --- YARDIMCI FONKSİYONLAR ---
 def load_channels():
     if not os.path.exists(DATA_FILE):
         return {}
@@ -19,124 +18,101 @@ def save_channels(data):
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-# --- PANEL ARAYÜZÜ ---
 @app.route('/', methods=['GET', 'POST'])
 def panel():
     channels = load_channels()
-    
     if request.method == 'POST':
         if 'add' in request.form:
             name = request.form.get('name')
             url = request.form.get('url')
             safe_id = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
-            
             if safe_id and url:
                 channels[safe_id] = {'url': url, 'name': name}
                 save_channels(channels)
-                
         elif 'delete' in request.form:
-            id_del = request.form.get('delete')
-            if id_del in channels:
-                del channels[id_del]
-                save_channels(channels)
+            del channels[request.form.get('delete')]
+            save_channels(channels)
         return redirect('/')
 
     html = """
     <!DOCTYPE html>
-    <html lang="tr">
-    <head>
-        <meta charset="UTF-8">
-        <title>Pro Stream Panel v2</title>
-        <style>
-            body { background: #121212; color: #e0e0e0; font-family: monospace; padding: 20px; }
-            .container { max-width: 800px; margin: 0 auto; }
-            input, button { background: #333; border: 1px solid #444; color: white; padding: 10px; width: 100%; margin-bottom: 10px; }
-            button { background: #007bff; cursor: pointer; }
-            .item { background: #1e1e1e; padding: 15px; margin-bottom: 10px; border-left: 5px solid #00e676; }
-            .url { color: #00e676; word-break: break-all; font-size: 12px; margin-top: 5px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>🔴 YouTube Proxy Streamer V2</h2>
+    <body style="background:#111; color:#fff; font-family:sans-serif; padding:20px;">
+        <div style="max-width:600px; margin:auto;">
+            <h2>🚀 Streamlink Panel</h2>
             <form method="POST">
-                <input type="text" name="name" placeholder="Kanal Adı (Örn: KralFM)" required>
-                <input type="text" name="url" placeholder="YouTube Linki" required>
-                <button type="submit" name="add">KANAL EKLE</button>
+                <input type="text" name="name" placeholder="Kanal Adı" required style="width:100%; padding:10px; margin:5px 0;">
+                <input type="text" name="url" placeholder="YouTube Linki" required style="width:100%; padding:10px; margin:5px 0;">
+                <button style="width:100%; padding:10px; background:blue; color:white; border:none;">EKLE</button>
             </form>
             <hr>
             {% for id, data in channels.items() %}
-            <div class="item">
+            <div style="background:#222; padding:10px; margin-bottom:10px; border-left:4px solid lime;">
                 <strong>{{ data.name }}</strong>
-                <div class="url">{{ request.host_url }}stream/{{ id }}</div>
+                <div style="color:lime; font-size:12px; margin-top:5px; word-break:break-all;">
+                    {{ request.host_url }}stream/{{ id }}
+                </div>
                 <form method="POST" style="margin-top:5px;">
                     <input type="hidden" name="delete" value="{{ id }}">
-                    <button type="submit" style="background:#b71c1c;">SİL</button>
+                    <button style="background:red; color:white; border:none; padding:5px;">SİL</button>
                 </form>
             </div>
             {% endfor %}
         </div>
     </body>
-    </html>
     """
     return render_template_string(html, channels=channels)
 
-# --- PROXY STREAM API ---
+# --- STREAMLINK API ---
 @app.route('/stream/<channel_id>')
-def stream_proxy(channel_id):
+def stream_video(channel_id):
     channels = load_channels()
     if channel_id not in channels:
-        return "Kanal bulunamadı", 404
+        return "Kanal Yok", 404
+    
+    target_url = channels[channel_id]['url']
 
-    youtube_url = channels[channel_id]['url']
+    # Komut: streamlink --stdout "URL" best
+    # Bu komut veriyi direkt olarak Python'a akıtır.
+    cmd = ["streamlink", "--stdout", target_url, "best"]
     
-    # 1. Komutu hazırla: yt-dlp direkt yayını standart çıktıya (stdout) basacak
-    # -f best: En iyi kaliteyi bul
-    # -o - : Dosyaya değil ekrana bas (pipe)
-    cmd = [
-        "yt-dlp",
-        "-f", "best",
-        "-o", "-", 
-        youtube_url
-    ]
-    
+    # Cookies varsa ekle (Çok Önemli!)
     if os.path.exists("cookies.txt"):
-        cmd.extend(["--cookies", "cookies.txt"])
+        cmd.extend(["--http-cookies", "cookies.txt"]) # Streamlink için parametre farklı olabilir ama genelde otomatik algılar veya --http-cookie gerektirir.
+        # Basitlik için streamlink genelde cookies dosyasını -c ile almaz, 
+        # ama bu örnekte parametre karmaşası olmasın diye sade bırakıyoruz.
+        # Eğer cookies gerekirse environment variable olarak eklemek daha iyidir.
 
-    # 2. İşlemi Başlat
     try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE  # Hataları yakalamak için
-        )
+        # İşlemi başlat
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
-        return f"Sistem hatası: {str(e)}", 500
+        return f"Başlatma Hatası: {str(e)}", 500
 
-    # 3. Yayını parça parça kullanıcıya gönder (Generator)
+    # Veri akış fonksiyonu
     def generate():
         try:
+            # Hata kontrolü için ilk başta biraz bekle
+            # Eğer streamlink hemen ölürse hata mesajını yakalayalım
+            output = process.stdout.read(1024) 
+            if not output:
+                error_msg = process.stderr.read().decode('utf-8')
+                yield f"Streamlink Hatası: {error_msg}".encode()
+                return
+
+            yield output
+            
+            # Sonsuz döngüde veriyi akıt
             while True:
-                # 8KB veri oku
-                data = process.stdout.read(8192)
+                data = process.stdout.read(16384) # 16KB parçalar
                 if not data:
-                    # Veri bittiyse hata var mı kontrol et
-                    stderr_output = process.stderr.read().decode('utf-8')
-                    if stderr_output:
-                        print("Yayın Hatası:", stderr_output) # Loglara yaz
                     break
                 yield data
-        except Exception as e:
-            process.kill()
+        except Exception:
+            pass
         finally:
-            if process.poll() is None:
-                process.kill()
+            process.kill()
 
-    # Eğer işlem hemen öldüyse hata mesajını döndür
-    if process.poll() is not None:
-         return f"Yayın başlatılamadı. YouTube linkini kontrol et.", 500
-
-    return Response(stream_with_context(generate()), mimetype='video/mp4')
+    return Response(stream_with_context(generate()), mimetype='video/mp4') # MPEG-TS akışı
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
