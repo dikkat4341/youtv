@@ -2,17 +2,15 @@ from flask import Flask, request, render_template_string, Response, stream_with_
 import subprocess
 import os
 import re
-import time
+import json
 
 app = Flask(__name__)
 
-# --- HAFIZA (RAM) ---
-# TRT Haber'i varsayılan olarak ekledim.
-# Sistem açıldığında direkt bunu dene. Eklemeyle uğraşma.
+# Başlangıçta TRT Haber (Test için)
 CHANNELS = {
     "trt": {
-        "name": "DAMAR FM",
-        "url": "https://www.youtube.com/watch?v=N1VogsSbe6M" 
+        "name": "damarr",
+        "url": "https://www.youtube.com/watch?v=N1VogsSbe6M"
     }
 }
 
@@ -21,19 +19,17 @@ def panel():
     global CHANNELS
     msg = ""
 
-    # KANAL EKLEME / SİLME İŞLEMLERİ
     if request.method == 'POST':
         if 'add' in request.form:
             name = request.form.get('name')
             url = request.form.get('url')
-            # Türkçe karakterleri ve boşlukları temizleyip ID yap
             safe_id = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
             
             if safe_id and url:
                 CHANNELS[safe_id] = {'name': name, 'url': url}
-                msg = f"✅ {name} eklendi! Listeye bak."
+                msg = f"✅ {name} eklendi!"
             else:
-                msg = "❌ Hata: İsim veya URL eksik."
+                msg = "❌ Eksik bilgi."
 
         elif 'delete' in request.form:
             del_id = request.form.get('delete')
@@ -41,52 +37,40 @@ def panel():
                 del CHANNELS[del_id]
                 msg = "🗑️ Silindi."
 
-    # HTML ARAYÜZÜ
     html = """
     <!DOCTYPE html>
     <html lang="tr">
     <head>
         <meta charset="UTF-8">
-        <title>Kesin Çözüm Panel</title>
+        <title>Zırhlı Panel</title>
         <style>
-            body { background: #0d0d0d; color: #fff; font-family: sans-serif; padding: 20px; }
-            .container { max-width: 600px; margin: auto; border: 1px solid #333; padding: 20px; border-radius: 10px; }
-            input, button { width: 100%; padding: 12px; margin: 5px 0; border-radius: 5px; border: none; box-sizing: border-box; }
-            input { background: #222; color: white; border: 1px solid #444; }
-            button.add { background: #007bff; color: white; font-weight: bold; cursor: pointer; }
-            button.del { background: #dc3545; color: white; width: auto; padding: 5px 10px; cursor: pointer; float: right; }
-            .item { background: #1a1a1a; padding: 15px; margin-bottom: 10px; border-left: 5px solid #28a745; overflow: hidden; }
-            .link { color: #28a745; font-family: monospace; font-size: 13px; display: block; margin-top: 5px; word-break: break-all; }
-            .msg { background: #333; color: yellow; padding: 10px; text-align: center; margin-bottom: 15px; border-radius: 5px; }
+            body { background: #111; color: #fff; font-family: monospace; padding: 20px; }
+            .container { max-width: 600px; margin: auto; border: 1px solid #333; padding: 20px; }
+            input, button { width: 100%; padding: 10px; margin: 5px 0; border: none; }
+            button { cursor: pointer; background: blue; color: white; }
+            .item { background: #222; padding: 10px; margin-bottom: 5px; border-left: 3px solid #0f0; }
+            a { color: #0f0; word-break: break-all; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h2 style="text-align:center">🚀 Final Stream Panel</h2>
+            <h2>🛡️ Zırhlı Panel (Cache Fix)</h2>
+            {% if msg %}<div style="background:#333; padding:10px; margin-bottom:10px;">{{ msg }}</div>{% endif %}
             
-            {% if msg %}
-            <div class="msg">{{ msg }}</div>
-            {% endif %}
-
             <form method="POST">
-                <input type="text" name="name" placeholder="Kanal Adı (Örn: ShowTV)" required>
+                <input type="text" name="name" placeholder="Kanal Adı" required>
                 <input type="text" name="url" placeholder="YouTube Linki" required>
-                <button class="add" name="add">KANAL EKLE</button>
+                <button name="add">EKLE</button>
             </form>
-
-            <hr style="border-color:#333; margin: 25px 0;">
-
-            <h3>Kanal Listesi ({{ channels|length }})</h3>
-            
+            <hr>
             {% for id, data in channels.items() %}
             <div class="item">
-                <strong style="font-size:18px">{{ data.name }}</strong>
-                <form method="POST" style="display:inline;">
+                <strong>{{ data.name }}</strong><br>
+                <a href="/stream/{{ id }}" target="_blank">{{ request.host_url }}stream/{{ id }}</a>
+                <form method="POST" style="margin-top:5px;">
                     <input type="hidden" name="delete" value="{{ id }}">
-                    <button class="del">SİL</button>
+                    <button style="background:red; width:auto; padding:5px;">SİL</button>
                 </form>
-                <br>
-                <span class="link">{{ request.host_url }}stream/{{ id }}</span>
             </div>
             {% endfor %}
         </div>
@@ -102,49 +86,68 @@ def stream_video(cid):
     
     target_url = CHANNELS[cid]['url']
 
-    # --- ÖNEMLİ KISIM: FFMPEG RE-STREAM ---
-    # 1. yt-dlp ile linki alıyoruz.
-    # 2. ffmpeg ile indirip tarayıcıya "pipe" ediyoruz.
-    # Bu yöntem IP kilidini %100 aşar çünkü YouTube sadece sunucuyu görür.
-    
-    # Gerçek video linkini al
-    try:
-        cmd_get_url = ["yt-dlp", "-g", "-f", "best", target_url]
-        if os.path.exists("cookies.txt"):
-            cmd_get_url.extend(["--cookies", "cookies.txt"])
-            
-        real_url = subprocess.check_output(cmd_get_url).decode().strip()
-    except Exception as e:
-        return f"Link alma hatası: {str(e)}", 500
+    # 1. ADIM: YouTube Linkini Al (Hata Ayıklamalı)
+    # Render'da /tmp/ klasörünü cache için kullanıyoruz.
+    cmd_get = [
+        "yt-dlp", 
+        "-g", 
+        "-f", "best",
+        "--cache-dir", "/tmp/",       # KRİTİK: Render'da yazılabilir tek yer burası
+        "--no-warnings",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        target_url
+    ]
 
-    # FFMPEG Komutu (Kopyalama Modu - CPU dostu)
+    # Cookies varsa ekle
+    if os.path.exists("cookies.txt"):
+        cmd_get.extend(["--cookies", "cookies.txt"])
+
+    # Komutu çalıştır ve hatayı yakala
+    try:
+        result = subprocess.run(cmd_get, capture_output=True, text=True)
+        
+        # Eğer hata varsa, stderr çıktısını göster
+        if result.returncode != 0:
+            return f"<h1>YT-DLP HATASI:</h1><pre>{result.stderr}</pre>", 500
+            
+        real_url = result.stdout.strip()
+        
+    except Exception as e:
+        return f"Sistem Hatası: {str(e)}", 500
+
+    # 2. ADIM: FFMPEG ile Yayını İlet
     ffmpeg_cmd = [
         "ffmpeg",
         "-re",
-        "-i", real_url,        # Giriş: YouTube linki
-        "-c", "copy",          # Video/Ses kodlaması yapma (Direkt kopyala)
-        "-f", "mpegts",        # Format: IPTV standardı
+        "-i", real_url,
+        "-c", "copy",
+        "-f", "mpegts",
         "-movflags", "frag_keyframe+empty_moov",
-        "pipe:1"               # Çıktıyı Python'a ver
+        "pipe:1"
     ]
 
     process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def generate():
+        # İlk veriyi oku (Hata kontrolü)
+        chunk = process.stdout.read(1024)
+        if not chunk:
+            err = process.stderr.read().decode()
+            yield f"FFMPEG Hatası: {err}".encode()
+            return
+        
+        yield chunk
         try:
             while True:
-                data = process.stdout.read(32768) # 32KB parça
-                if not data:
-                    break
+                data = process.stdout.read(32768)
+                if not data: break
                 yield data
         except:
             pass
         finally:
-            if process.poll() is None:
-                process.kill()
+            if process.poll() is None: process.kill()
 
     return Response(stream_with_context(generate()), mimetype='video/mp2t')
 
 if __name__ == '__main__':
-    # Tek işlemci, Threading açık
-    app.run(host='0.0.0.0', port=10000, threaded=True)
+    app.run(host='0.0.0.0', port=10000)
