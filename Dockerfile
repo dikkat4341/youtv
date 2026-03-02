@@ -1,22 +1,15 @@
-# Hafif ve güncel Python sürümü
 FROM python:3.9-slim
 
-# Sistem araçlarını kur (FFMPEG dahil)
+# Temel araçlar
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    curl \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Çalışma dizini
 WORKDIR /app
-
-# Dosyaları kopyala
 COPY . .
 
-# Python kütüphanelerini kur
+# Kütüphaneleri kur
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Gunicorn ayarı: 
-# --timeout 0 (Yayın kesilmesin diye zaman aşımını kapatıyoruz)
-# --workers 1 (Tek işlemci ile stabil çalışsın)
+# Zaman aşımını (timeout) kapatıyoruz ki yayın kesilmesin
 CMD ["gunicorn", "-b", "0.0.0.0:10000", "--timeout", "0", "--workers", "1", "app:app"]
