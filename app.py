@@ -1,14 +1,15 @@
-from flask import Flask, request, redirect, render_template_string
+from flask import Flask, request, redirect, render_template_string, Response, stream_with_context
 import subprocess
 import json
 import os
 import re
+import time
 
 app = Flask(__name__)
 
 DATA_FILE = "channels.json"
 
-# Veri yükleme/kaydetme
+# --- YARDIMCI FONKSİYONLAR ---
 def load_channels():
     if not os.path.exists(DATA_FILE):
         return {}
@@ -19,7 +20,26 @@ def save_channels(data):
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-# Panel Arayüzü
+def get_real_youtube_url(youtube_url):
+    """yt-dlp kullanarak gerçek HLS linkini alır"""
+    cmd = [
+        "yt-dlp", 
+        "-g", 
+        "-f", "best", # En iyi kaliteyi seç
+        youtube_url
+    ]
+    if os.path.exists("cookies.txt"):
+        cmd.extend(["--cookies", "cookies.txt"])
+        
+    try:
+        # Linki al ve temizle
+        direct_url = subprocess.check_output(cmd).decode('utf-8').strip()
+        return direct_url
+    except Exception as e:
+        print(f"Hata: {e}")
+        return None
+
+# --- PANEL ARAYÜZÜ ---
 @app.route('/', methods=['GET', 'POST'])
 def panel():
     channels = load_channels()
@@ -28,7 +48,7 @@ def panel():
         if 'add' in request.form:
             name = request.form.get('name')
             url = request.form.get('url')
-            # ID temizleme (sadece harf rakam)
+            # ID temizleme
             safe_id = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
             
             if safe_id and url:
@@ -42,84 +62,87 @@ def panel():
                 save_channels(channels)
         return redirect('/')
 
-    # HTML Tasarımı
     html = """
     <!DOCTYPE html>
     <html lang="tr">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>IPTV Panel</title>
+        <title>Pro Stream Panel</title>
         <style>
-            body { font-family: sans-serif; background: #0f0f0f; color: #fff; padding: 20px; }
-            .box { background: #1f1f1f; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
-            input, button { width: 100%; padding: 12px; margin: 5px 0; box-sizing: border-box; border-radius: 4px; border:none;}
-            input { background: #333; color: white; }
-            button { background: #e50914; color: white; cursor: pointer; font-weight: bold; }
-            .list-item { border-bottom: 1px solid #333; padding: 15px 0; }
-            .m3u-link { color: #00e676; font-family: monospace; word-break: break-all; background: #000; padding: 10px; border-radius: 4px; display: block; margin-top: 5px; }
+            body { background: #121212; color: #e0e0e0; font-family: monospace; padding: 20px; }
+            .container { max-width: 800px; margin: 0 auto; }
+            input, button { background: #333; border: 1px solid #444; color: white; padding: 10px; width: 100%; margin-bottom: 10px; }
+            button { background: #007bff; cursor: pointer; }
+            .item { background: #1e1e1e; padding: 15px; margin-bottom: 10px; border-left: 5px solid #007bff; }
+            .url { color: #00ff00; word-break: break-all; font-size: 12px; }
         </style>
     </head>
     <body>
-        <div style="max-width: 600px; margin: auto;">
-            <h2>📺 Stream Yöneticisi</h2>
-            
-            <div class="box">
-                <form method="POST">
-                    <input type="text" name="name" placeholder="Kanal Adı (Örn: ShowTV)" required>
-                    <input type="text" name="url" placeholder="YouTube Canlı Linki" required>
-                    <button type="submit" name="add">EKLE</button>
+        <div class="container">
+            <h2>🔴 YouTube Proxy Streamer</h2>
+            <form method="POST">
+                <input type="text" name="name" placeholder="Kanal Adı (Örn: CNN)" required>
+                <input type="text" name="url" placeholder="YouTube Linki" required>
+                <button type="submit" name="add">KANAL EKLE</button>
+            </form>
+            <hr>
+            {% for id, data in channels.items() %}
+            <div class="item">
+                <h3>{{ data.name }}</h3>
+                <div class="url">{{ request.host_url }}stream/{{ id }}</div>
+                <form method="POST" style="margin-top:5px;">
+                    <input type="hidden" name="delete" value="{{ id }}">
+                    <button type="submit" style="background:#b71c1c;">SİL</button>
                 </form>
             </div>
-
-            <div class="box">
-                <h3>Kanal Listesi</h3>
-                {% for id, data in channels.items() %}
-                <div class="list-item">
-                    <strong>{{ data.name }}</strong>
-                    <div class="m3u-link">
-                        {{ request.host_url }}live/{{ id }}.m3u8
-                    </div>
-                    <form method="POST" style="margin-top:5px;">
-                        <input type="hidden" name="delete" value="{{ id }}">
-                        <button type="submit" style="background:#444; width:auto; padding:5px 15px;">SİL</button>
-                    </form>
-                </div>
-                {% endfor %}
-            </div>
+            {% endfor %}
         </div>
     </body>
     </html>
     """
     return render_template_string(html, channels=channels)
 
-# M3U8 Link Üretici
-@app.route('/live/<channel_id>.m3u8')
-def stream(channel_id):
+# --- PROXY STREAM API (PROFESYONEL KISIM) ---
+@app.route('/stream/<channel_id>')
+def stream_proxy(channel_id):
     channels = load_channels()
     if channel_id not in channels:
-        return "Kanal Yok", 404
+        return "Kanal bulunamadı", 404
 
-    target = channels[channel_id]['url']
+    youtube_url = channels[channel_id]['url']
     
-        # yt-dlp komutu (HLS Formatına zorla + IPv4)
-    cmd = [
-        "yt-dlp", 
-        "-g", 
-        "-f", "best[protocol^=m3u8]/best",  # Sadece m3u8 formatını al
-        "--force-ipv4",                     # IPv4 kullan (IP hatasını önler)
-        target
-    ]
-    if os.path.exists("cookies.txt"):
-        cmd.extend(["--cookies", "cookies.txt"])
+    # 1. Gerçek yayın linkini al (yt-dlp)
+    real_url = get_real_youtube_url(youtube_url)
+    if not real_url:
+        return "Yayın linki alınamadı", 500
 
-    try:
-        # Linki al
-        direct_url = subprocess.check_output(cmd).decode('utf-8').strip()
-        # Kullanıcıyı yönlendir
-        return redirect(direct_url, code=302)
-    except:
-        return "Yayin alinamadi", 500
+    # 2. FFMPEG ile yayını sunucuya çek ve anlık olarak kullanıcıya bas
+    # Bu işlem CPU kullanır ama IP kilidini kesin çözer.
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-re',
+        '-i', real_url,       # Giriş: YouTube HLS linki
+        '-c', 'copy',         # Kodlama yapma (CPU dostu, direkt kopyala)
+        '-f', 'mpegts',       # Çıkış formatı: MPEG-TS (IPTV için standart)
+        '-movflags', 'frag_keyframe+empty_moov',
+        'pipe:1'              # Çıktıyı doğrudan Python'a ver
+    ]
+
+    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def generate():
+        try:
+            while True:
+                # 4KB'lık parçalar halinde oku ve gönder
+                data = process.stdout.read(4096)
+                if not data:
+                    break
+                yield data
+        finally:
+            # Kullanıcı çıkarsa işlemi öldür
+            process.kill()
+
+    return Response(stream_with_context(generate()), mimetype='video/mp2t')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
