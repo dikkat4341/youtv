@@ -102,8 +102,14 @@ def stream(channel_id):
 
     target = channels[channel_id]['url']
     
-    # yt-dlp komutu
-    cmd = ["yt-dlp", "-g", target]
+        # yt-dlp komutu (HLS Formatına zorla + IPv4)
+    cmd = [
+        "yt-dlp", 
+        "-g", 
+        "-f", "best[protocol^=m3u8]/best",  # Sadece m3u8 formatını al
+        "--force-ipv4",                     # IPv4 kullan (IP hatasını önler)
+        target
+    ]
     if os.path.exists("cookies.txt"):
         cmd.extend(["--cookies", "cookies.txt"])
 
