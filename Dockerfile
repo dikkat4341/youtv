@@ -1,7 +1,6 @@
-# BURAYI DEĞİŞTİRDİK: 3.9 yerine 3.10 yaptık.
 FROM python:3.10-slim
 
-# Temel araçları, git ve ffmpeg'i kur
+# Gerekli araçlar
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -10,11 +9,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY . .
 
-# Flask ve Gunicorn kur
-RUN pip install --no-cache-dir flask gunicorn
-
-# yt-dlp'yi GitHub'dan en güncel haliyle kur
+# Flask ve yt-dlp kur
+RUN pip install --no-cache-dir flask
 RUN pip install --force-reinstall https://github.com/yt-dlp/yt-dlp/archive/master.zip
 
-# Uygulamayı başlat
-CMD ["gunicorn", "-b", "0.0.0.0:10000", "--timeout", "0", "--workers", "1", "app:app"]
+# ÖNEMLİ: Gunicorn YOK. Direkt Python var.
+# Bu sayede eklediğin kanal silinmez, listede görünür.
+CMD ["python", "app.py"]
