@@ -1,4 +1,5 @@
-FROM python:3.9-slim
+# DÜZELTME: yt-dlp artık Python 3.10+ istiyor, 3.10'a geçtik.
+FROM python:3.10-slim
 
 # Temel araçları ve ffmpeg'i kur
 RUN apt-get update && apt-get install -y \
@@ -12,7 +13,7 @@ COPY . .
 # Flask ve Gunicorn kur
 RUN pip install --no-cache-dir flask gunicorn
 
-# ÖNEMLİ: yt-dlp'yi direkt GitHub'dan kur (En güncel sürüm için şart)
+# yt-dlp'yi GitHub'dan en güncel haliyle kur
 RUN pip install --force-reinstall https://github.com/yt-dlp/yt-dlp/archive/master.zip
 
 # Uygulamayı başlat
