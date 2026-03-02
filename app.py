@@ -1,171 +1,118 @@
-from flask import Flask, request, redirect, render_template_string, Response, stream_with_context
+from flask import Flask, request, render_template_string, Response, stream_with_context
 import subprocess
-import sqlite3
 import os
 import re
 
 app = Flask(__name__)
 
-# ÖNEMLİ: Veritabanını /tmp/ klasörüne kuruyoruz.
-# Render'da /tmp/ klasörü her zaman yazılabilir alandır.
-DB_PATH = "/tmp/iptv.db"
-
-def init_db():
-    """Veritabanı tablosunu oluştur"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS channels 
-                 (id TEXT PRIMARY KEY, name TEXT, url TEXT)''')
-    conn.commit()
-    conn.close()
-
-# Uygulama başlarken veritabanını hazırla
-init_db()
-
-def get_all_channels():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, url FROM channels")
-    data = c.fetchall()
-    conn.close()
-    # Sözlük formatına çevir
-    return {row[0]: {'name': row[1], 'url': row[2]} for row in data}
-
-def add_channel_db(safe_id, name, url):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO channels (id, name, url) VALUES (?, ?, ?)", 
-                  (safe_id, name, url))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"DB Hatası: {e}")
-        return False
-
-def delete_channel_db(channel_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM channels WHERE id=?", (channel_id,))
-    conn.commit()
-    conn.close()
+# Verileri Hafızada Tut (RAM)
+# Tek işlemci olduğu için artık silinmez.
+CHANNELS = {}
 
 @app.route('/', methods=['GET', 'POST'])
 def panel():
-    message = ""
-    
+    global CHANNELS
+    msg = ""
+
     if request.method == 'POST':
+        # EKLEME İŞLEMİ
         if 'add' in request.form:
             name = request.form.get('name')
             url = request.form.get('url')
+            # ID oluştur
             safe_id = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
             
             if safe_id and url:
-                if add_channel_db(safe_id, name, url):
-                    message = f"✅ EKLENDİ: {name}"
-                else:
-                    message = "❌ Veritabanı Hatası!"
+                CHANNELS[safe_id] = {'name': name, 'url': url}
+                msg = f"✅ {name} Eklendi!"
             else:
-                message = "❌ İsim veya URL geçersiz"
-                
+                msg = "❌ Hata: İsim veya URL eksik."
+
+        # SİLME İŞLEMİ
         elif 'delete' in request.form:
-            id_del = request.form.get('delete')
-            delete_channel_db(id_del)
-            message = "🗑️ Silindi"
+            del_id = request.form.get('delete')
+            if del_id in CHANNELS:
+                del CHANNELS[del_id]
+                msg = "🗑️ Silindi."
 
-    # Kanalları veritabanından çek
-    channels = get_all_channels()
-
+    # HTML ARAYÜZÜ
     html = """
     <!DOCTYPE html>
-    <body style="background:#111; color:#fff; font-family:monospace; padding:20px;">
-        <div style="max-width:600px; margin:auto;">
-            <h2>💾 Veritabanlı Panel (/tmp)</h2>
+    <body style="background:#111; color:#fff; font-family:sans-serif; padding:20px;">
+        <div style="max-width:600px; margin:auto; border:1px solid #333; padding:20px;">
+            <h2 style="color:#0f0;">⚡ Basit Panel</h2>
             
-            {% if message %}
-            <div style="padding:10px; background:#333; color:yellow; border:1px solid yellow; margin-bottom:10px;">
-                {{ message }}
-            </div>
+            {% if msg %}
+            <div style="background:#222; padding:10px; margin-bottom:10px; border:1px solid #555;">{{ msg }}</div>
             {% endif %}
 
-            <div style="background:#222; padding:15px; border-radius:5px;">
-                <form method="POST">
-                    <input type="text" name="name" placeholder="Kanal Adı (Örn: Fox)" required style="width:100%; padding:10px; margin-bottom:5px;">
-                    <input type="text" name="url" placeholder="YouTube Linki" required style="width:100%; padding:10px; margin-bottom:5px;">
-                    <button style="width:100%; padding:10px; background:blue; color:white; border:none; cursor:pointer;">KAYDET</button>
-                </form>
-            </div>
+            <form method="POST">
+                <input type="text" name="name" placeholder="Kanal Adı" required style="width:100%; padding:10px; margin-bottom:5px;">
+                <input type="text" name="url" placeholder="YouTube Linki" required style="width:100%; padding:10px; margin-bottom:5px;">
+                <button name="add" style="width:100%; padding:10px; background:blue; color:white; border:none; cursor:pointer;">EKLE</button>
+            </form>
 
-            <hr style="border-color:#444; margin:20px 0;">
+            <hr style="border-color:#333; margin:20px 0;">
 
-            <h3>Kanal Listesi ({{ channels|length }})</h3>
+            <h3>LİSTE ({{ channels|length }})</h3>
             
             {% if channels|length == 0 %}
-                <div style="color:red; text-align:center;">LİSTE BOŞ - Lütfen kanal ekleyin.</div>
+                <p style="color:red;">Liste Boş.</p>
             {% else %}
                 {% for id, data in channels.items() %}
-                <div style="background:#1a1a1a; padding:10px; margin-bottom:10px; border-left:4px solid #00e676;">
-                    <strong style="font-size:18px;">{{ data.name }}</strong>
-                    <div style="margin-top:5px;">
-                        <a href="/stream/{{ id }}" target="_blank" style="color:#00e676; font-size:12px;">{{ request.host_url }}stream/{{ id }}</a>
-                    </div>
+                <div style="background:#222; padding:10px; margin-bottom:5px; border-left:3px solid #0f0;">
+                    <strong>{{ data.name }}</strong>
+                    <br>
+                    <a href="/stream/{{ id }}" target="_blank" style="color:#0f0; font-size:12px;">{{ request.host_url }}stream/{{ id }}</a>
                     <form method="POST" style="margin-top:5px;">
                         <input type="hidden" name="delete" value="{{ id }}">
-                        <button style="background:#d32f2f; color:white; border:none; padding:5px 10px; cursor:pointer;">SİL</button>
+                        <button style="background:#d00; color:#fff; border:none; padding:5px; cursor:pointer;">SİL</button>
                     </form>
                 </div>
                 {% endfor %}
             {% endif %}
-            
-            <p style="font-size:11px; color:#666;">Veritabanı Konumu: /tmp/iptv.db</p>
         </div>
     </body>
     """
-    return render_template_string(html, channels=channels, message=message)
+    return render_template_string(html, channels=CHANNELS, msg=msg)
 
-@app.route('/stream/<channel_id>')
-def stream_video(channel_id):
-    channels = get_all_channels()
-    if channel_id not in channels:
-        return "Kanal Bulunamadı", 404
+@app.route('/stream/<cid>')
+def stream(cid):
+    if cid not in CHANNELS:
+        return "Kanal Yok", 404
     
-    target_url = channels[channel_id]['url']
-
-    # yt-dlp komutu
-    cmd = [
-        "yt-dlp", 
-        "-f", "best",
-        "-o", "-",
-        "--force-ipv4",
-        "--no-warnings",
-        target_url
-    ]
+    url = CHANNELS[cid]['url']
+    
+    # Yayın Komutu
+    cmd = ["yt-dlp", "-f", "best", "-o", "-", "--force-ipv4", url]
     
     if os.path.exists("cookies.txt"):
         cmd.extend(["--cookies", "cookies.txt"])
 
+    # Yayını başlat
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def generate():
-        first_chunk = process.stdout.read(1024)
-        if not first_chunk:
-            error = process.stderr.read().decode('utf-8', errors='ignore')
-            yield f"Yayın Hatası: {error}".encode()
+        # İlk veriyi oku (Hata varsa ekrana basmak için)
+        first = process.stdout.read(1024)
+        if not first:
+            err = process.stderr.read().decode()
+            yield f"Yayın Hatası: {err}".encode()
             return
-        yield first_chunk
+        
+        yield first
+        # Devamını akıt
         try:
             while True:
                 data = process.stdout.read(16384)
                 if not data: break
                 yield data
-        except: pass
+        except:
+            pass
         finally:
             if process.poll() is None: process.kill()
 
     return Response(stream_with_context(generate()), mimetype='video/mp4')
 
 if __name__ == '__main__':
-    # Veritabanını başlat
-    init_db()
     app.run(host='0.0.0.0', port=10000)
