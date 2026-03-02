@@ -11,8 +11,8 @@ app = Flask(__name__)
 # Sistem açıldığında direkt bunu dene. Eklemeyle uğraşma.
 CHANNELS = {
     "trt": {
-        "name": "TRT Haber (Test)",
-        "url": "https://www.youtube.com/watch?v=HuO_u8T9XlM" 
+        "name": "DAMAR FM",
+        "url": "https://www.youtube.com/watch?v=N1VogsSbe6M" 
     }
 }
 
